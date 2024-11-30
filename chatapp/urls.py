@@ -12,6 +12,8 @@ urlpatterns = [
     path('add_bot/', add_bot, name='add_bot'),
     path('get_all_bots/', get_all_bots, name='get_all_bots'),
     path('get_bot_by_id/', get_bot_by_id, name='get_bot_by_id'),
+    path('chat_generation/', chat_generation, name='chat_generation'),
+    path('show_chat/', show_chat, name='show_chat'),
     
 ]
 

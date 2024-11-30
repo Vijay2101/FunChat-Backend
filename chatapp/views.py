@@ -25,6 +25,7 @@ client = MongoClient(mongo_uri)
 db = client['ChatApp']          # Database name
 user_collection = db['users'] 
 chat_bots_collection = db['chat_bots']
+user_chats_collection = db['user_chats']
 
 # Create your views here.
 
@@ -61,8 +62,9 @@ def groq_res(prompt):
                 {"role": "user", "content": prompt},
             ],
             model="llama-3.1-70b-versatile",
+            response_format={"type": "json_object"},
         )
-        res = chat_completion.choices[0].message.content
+        res = chat_completion.choices[0].message.content.strip()
         return res
     except Exception as e:
         error_message = str(e)  # Convert the error to a string
@@ -76,11 +78,26 @@ def groq_res(prompt):
 def groq_api(request):
     # Extract the prompt from the request body
     prompt = request.data.get('prompt')
+
     if not prompt:
         return Response({"error": "Prompt is required"}, status=400)
 
+    chat_prompt = f'''
+You are a personal bot reply to the user queries:
+{prompt}
+
+
+Return a single response in json format
+{{
+    response:response
+}}
+'''
+
     # Call the groq_res function
-    result = groq_res(prompt)
+    result = groq_res(chat_prompt)
+    result = json.loads(result)
+    print(result)
+    result = list(result.values())[0]
     return Response({"response": result})
 
 
@@ -134,7 +151,7 @@ def signup(request):
                 return JsonResponse({"message": "Invalid name format"}, status=400)
 
             # Check if email already exists
-            if user_collection.find_one({"professional_email": email}):
+            if user_collection.find_one({"email": email}):
                 return JsonResponse({"message": "Email already registered"}, status=400)
 
             # Hash the password
@@ -143,7 +160,7 @@ def signup(request):
             # Create the new user record
             new_user = {
                 "username": username,
-                "professional_email": email,
+                "email": email,
                 "password": hashed_password,
                 "created_at": datetime.now(),
                 "profile_photo_url": "https://wallpapercrafter.com/desktop1/636078-Bleach-Ichigo-Kurosaki-Zangetsu-Bleach-1080P.jpg"
@@ -188,9 +205,10 @@ def signin(request):
                 return JsonResponse({"error": "Invalid fields detected"}, status=400)
 
             # Find user by email only
-            user = user_collection.find_one({"professional_email": email})
+            user = user_collection.find_one({"email": email})
 
             if user:
+                print("user exists")
                 hashed_input_password = hashlib.sha256(password.encode()).hexdigest()
                 token = generate_token(str(user['_id']))
 
@@ -288,3 +306,112 @@ def get_bot_by_id(request):
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+
+
+
+@csrf_exempt
+def chat_generation(request):
+    if request.method == "POST":
+        data = request.POST  # For form data
+        email = data.get('email')
+        user_name = data.get('username')
+        bot_id = data.get('bot_id')
+        bot_name = data.get('bot_name')
+        prompt = data.get('prompt')
+        start_message = data.get('start_message')
+        last_message = data.get('last_message')
+        last_message = user_name + ": " + last_message
+
+        user_chats = db['user_chats'].find_one({"email": email, "bot_id": bot_id})
+
+        if user_chats:
+            # If user chat exists, retrieve the dialog and add the last message
+            chat_history = user_chats.get("chat_history", [])
+            # chat_history_len= len(chat_history)
+
+        else:
+            new_user_chat = {
+                "email": email,
+                "bot_id": bot_id,
+                "chat_history": [start_message]  # Initialize chat_history with start_message and last_message
+            }
+            # Insert the new document into the 'user_chats' collection
+            user_chats_collection.insert_one(new_user_chat)
+            # return "User chat created with start message and last message."
+            chat_history = [start_message]
+
+        chat_history_string = '\n'.join(chat_history)
+        chat_prompt = f'''
+#Your task is to roleplay given character and reply to user {user_name} based on it and chat history roleplaying as the character.
+
+Character:
+'{prompt}'
+
+chat history:
+'{chat_history_string}'
+
+last message:
+{last_message}
+
+You are {bot_name} and reply accordingly 
+
+The response should be in Json format based on last message with a single dialog:
+{{
+    {user_name}: dialog
+}}
+'''
+
+        # Call the groq_res function
+        bot_chat = groq_res(chat_prompt)
+        bot_chat = json.loads(bot_chat)
+
+        bot_chat = list(bot_chat.values())[0]
+        bot_chat = bot_name+": "+ bot_chat
+        chat_history.append(last_message)
+        chat_history.append(bot_chat)
+
+        user_chats_collection.update_one(
+            {"email": email, "bot_id": bot_id},
+            {"$set": {"chat_history": chat_history}}
+        )
+        # return Response({"response": bot_chat})
+        return JsonResponse({"response": bot_chat}, status=200)
+
+
+def show_chat(request):
+    email = request.GET.get('email')
+    bot_id = request.GET.get('bot_id')
+    # bot_name = request.GET.get('bot_name')
+
+    user_chats = user_chats_collection.find_one({"email": email, "bot_id": bot_id})
+
+    if user_chats:
+        
+        chat_history = user_chats.get("chat_history", [])
+        print(len(chat_history))
+        if len(chat_history)==1:
+            return JsonResponse({"bot_response":chat_history[0]})
+
+        else:
+            return JsonResponse({"chats":chat_history})
+        
+    else:
+
+        bot = chat_bots_collection.find_one({"_id": ObjectId(bot_id)})
+        if not bot:
+            return JsonResponse({"message": f"Bot not found"}, status=404)
+        
+        start_message = bot.get("start_message")
+        bot_name = bot.get("bot_name")
+        start_message = bot_name + ": " + start_message
+
+        new_user_chat = {
+            "email": email,
+            "bot_id": bot_id,
+            "chat_history": [start_message]  # Initialize chat_history with start_message and last_message
+        }
+        # Insert the new document into the 'user_chats' collection
+        user_chats_collection.insert_one(new_user_chat)
+
+        return JsonResponse({"bot_response":start_message})
