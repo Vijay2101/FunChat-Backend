@@ -3,7 +3,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 import os
 import json
-
+from bson.objectid import ObjectId
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
@@ -22,9 +22,9 @@ load_dotenv()
 
 mongo_uri = os.environ.get("MONGO_URI")
 client = MongoClient(mongo_uri)
-db = client['users_data']          # Database name
+db = client['ChatApp']          # Database name
 user_collection = db['users'] 
-
+chat_bots_collection = db['chat_bots']
 
 # Create your views here.
 
@@ -215,3 +215,76 @@ def signin(request):
             return JsonResponse({"error": str(e)}, status=500)
 
     return JsonResponse({"message": "Invalid request method"}, status=405)
+
+
+
+@csrf_exempt
+def add_bot(request):
+    if request.method == "POST":
+        try:
+            data = request.POST  # For form data
+            bot_name = data.get('bot_name')
+            description = data.get('description')
+            prompt = data.get('prompt')
+            start_message = data.get('start_message')
+            image_url = data.get('image_url')
+
+            # Check for required fields
+            if not description or not image_url:
+                return JsonResponse({"error": "Missing required fields"}, status=400)
+
+            # Create bot document
+            new_bot = {
+                "bot_name": bot_name,
+                "description": description,
+                "prompt": prompt,
+                "image_url": image_url,
+                "start_message": start_message,
+                "created_at": datetime.now() 
+            }
+
+            # Insert into MongoDB
+            result = chat_bots_collection.insert_one(new_bot)
+
+            if result.inserted_id:
+                return JsonResponse({"message": "Bot added successfully", "bot_id": str(result.inserted_id)}, status=201)
+            else:
+                return JsonResponse({"message": "Failed to add bot"}, status=500)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"message": "Invalid request method"}, status=405)
+
+
+# Get all bots from the database
+def get_all_bots(request):
+    try:
+        bots = list(chat_bots_collection.find())  # Fetch all bots from the collection
+        for bot in bots:
+            bot['_id'] = str(bot['_id'])  # Convert MongoDB ObjectId to string
+
+        return JsonResponse({"bots": bots}, status=200)
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+# Get a specific bot based on its ID
+def get_bot_by_id(request):
+    bot_id = request.GET.get('bot_id')  # Get bot_id from query parameter
+
+    if not bot_id:
+        return JsonResponse({"error": "Bot ID is required"}, status=400)
+    try:
+        # Convert the bot_id to ObjectId format for MongoDB query
+        bot = chat_bots_collection.find_one({"_id": ObjectId(bot_id)})
+
+        if bot:
+            bot['_id'] = str(bot['_id'])  # Convert MongoDB ObjectId to string
+            return JsonResponse({"bot": bot}, status=200)
+        else:
+            return JsonResponse({"message": "Bot not found"}, status=404)
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
